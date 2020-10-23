@@ -19,9 +19,9 @@ import (
 	"log"
 	"os"
 
+	"github.com/iychoi/parcel/pkg/catalog"
 	"github.com/iychoi/parcel/pkg/cli"
 	"github.com/iychoi/parcel/pkg/kubernetes"
-	"github.com/iychoi/parcel/pkg/metadata"
 )
 
 type CommandHandler func([]string)
@@ -34,7 +34,7 @@ type Command struct {
 
 var (
 	commandList          map[string]Command
-	metadataServiceURL   string
+	catalogServiceURL    string
 	namespace            string
 	kubernetesConfigPath string
 	trace                bool
@@ -48,10 +48,10 @@ func main() {
 
 	// Parse parameters
 	flag.BoolVar(&version, "version", false, "Print cli version information")
-	flag.StringVar(&metadataServiceURL, "svcurl", metadata.MetadataServiceURL, "Set Metadata Service URL")
+	flag.StringVar(&catalogServiceURL, "svcurl", catalog.CatalogServiceURL, "Set Catalog Service URL")
 	flag.StringVar(&kubernetesConfigPath, "kubeconfig", defaultKubeConfigPath, "Set a kubernetes config path")
 	flag.StringVar(&namespace, "namespace", kubernetes.VolumeNamespace, "Set a volume namespace")
-	flag.BoolVar(&trace, "trace", false, "Trace communication with Metadata Service")
+	flag.BoolVar(&trace, "trace", false, "Trace communication with Catalog Service")
 	flag.BoolVar(&short, "short", false, "Print short content")
 
 	flag.Parse()
@@ -111,7 +111,7 @@ func showCommands() {
 }
 
 func listHandler(args []string) {
-	client, err := metadata.NewMetadataClient(metadataServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func listHandler(args []string) {
 	}
 
 	for _, ds := range datasets {
-		ds.PrintDataset(short, metadata.ShortDescriptionLen)
+		ds.PrintDataset(short, catalog.ShortDescriptionLen)
 		fmt.Printf("\n")
 	}
 }
@@ -138,7 +138,7 @@ func searchHandler(args []string) {
 		keywords = append(keywords, arg)
 	}
 
-	client, err := metadata.NewMetadataClient(metadataServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -149,13 +149,13 @@ func searchHandler(args []string) {
 	}
 
 	for _, ds := range datasets {
-		ds.PrintDataset(short, metadata.ShortDescriptionLen)
+		ds.PrintDataset(short, catalog.ShortDescriptionLen)
 		fmt.Printf("\n")
 	}
 }
 
 func orderHandler(args []string) {
-	client, err := metadata.NewMetadataClient(metadataServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}

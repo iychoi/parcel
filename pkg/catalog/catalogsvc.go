@@ -11,7 +11,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package metadata
+package catalog
 
 import (
 	"fmt"
@@ -24,31 +24,31 @@ import (
 )
 
 const (
-	// MetadataServiceURL is a default metadata service URL
-	MetadataServiceURL = "http://localhost:8080"
+	// CatalogServiceURL is a default catalog service URL
+	CatalogServiceURL = "http://localhost:8080"
 
 	// ShortDescriptionLen is the short description max length
 	ShortDescriptionLen = 200
 )
 
-// ParcelMetadataClient is a client for metadata service
-type ParcelMetadataClient struct {
-	metadataServiceURL string
-	trace              bool
-	restClient         *resty.Request
+// ParcelCatalogServiceClient is a client for catalog service
+type ParcelCatalogServiceClient struct {
+	catalogServiceURL string
+	trace             bool
+	restClient        *resty.Request
 }
 
-// NewMetadataClient creates a new ParcelMetadataClient
-func NewMetadataClient(metadataServiceURL string, trace bool) (*ParcelMetadataClient, error) {
-	serviceURL := MetadataServiceURL
-	if len(metadataServiceURL) > 0 {
-		serviceURL = metadataServiceURL
+// NewCatalogServiceClient creates a new ParcelCatalogServiceClient
+func NewCatalogServiceClient(CatalogServiceURL string, trace bool) (*ParcelCatalogServiceClient, error) {
+	serviceURL := CatalogServiceURL
+	if len(CatalogServiceURL) > 0 {
+		serviceURL = CatalogServiceURL
 	}
 
-	return &ParcelMetadataClient{
-		metadataServiceURL: serviceURL,
-		restClient:         getRestClient(trace),
-		trace:              trace,
+	return &ParcelCatalogServiceClient{
+		catalogServiceURL: serviceURL,
+		restClient:        getRestClient(trace),
+		trace:             trace,
 	}, nil
 }
 
@@ -90,15 +90,15 @@ func traceResponse(trace bool, resp *resty.Response, err error) {
 	}
 }
 
-func (client *ParcelMetadataClient) get(url string) (*resty.Response, error) {
+func (client *ParcelCatalogServiceClient) get(url string) (*resty.Response, error) {
 	resp, err := client.restClient.Get(url)
 	traceResponse(client.trace, resp, err)
 	return resp, err
 }
 
 // GetAllDatasets returns all datasets
-func (client *ParcelMetadataClient) GetAllDatasets() ([]*dataset.Dataset, error) {
-	requestURL := makeRequestPath(MetadataServiceURL, "/datasets")
+func (client *ParcelCatalogServiceClient) GetAllDatasets() ([]*dataset.Dataset, error) {
+	requestURL := makeRequestPath(CatalogServiceURL, "/datasets")
 
 	resp, err := client.get(requestURL)
 	if err != nil {
@@ -112,8 +112,8 @@ func (client *ParcelMetadataClient) GetAllDatasets() ([]*dataset.Dataset, error)
 }
 
 // SearchDatasets returns search result
-func (client *ParcelMetadataClient) SearchDatasets(keywords []string) ([]*dataset.Dataset, error) {
-	// TODO: add search API to metadata service
+func (client *ParcelCatalogServiceClient) SearchDatasets(keywords []string) ([]*dataset.Dataset, error) {
+	// TODO: add search API to catalog service
 	// Now just do it from local
 
 	datasets, err := client.GetAllDatasets()
@@ -131,8 +131,8 @@ func (client *ParcelMetadataClient) SearchDatasets(keywords []string) ([]*datase
 }
 
 // SelectDatasets returns datasets with specific IDs
-func (client *ParcelMetadataClient) SelectDatasets(ids []string) ([]*dataset.Dataset, error) {
-	// TODO: add search API to metadata service
+func (client *ParcelCatalogServiceClient) SelectDatasets(ids []string) ([]*dataset.Dataset, error) {
+	// TODO: add search API to catalog service
 	// Now just do it from local
 
 	datasets, err := client.GetAllDatasets()
