@@ -33,15 +33,29 @@ type Command struct {
 }
 
 var (
-	commandList          map[string]Command
-	catalogServiceURL    string
-	namespace            string
-	kubernetesConfigPath string
-	trace                bool
-	short                bool
+	commandList map[string]Command
+	config      cli.Config
+	trace       bool
+	short       bool
 )
 
 func main() {
+	var catalogServiceURL string
+	var namespace string
+	var kubernetesConfigPath string
+
+	// read config
+	if cli.CheckConfig() {
+		config, err := cli.GetConfig()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		catalogServiceURL = config.CatalogServiceURL
+		namespace = config.Namespace
+		kubernetesConfigPath = config.KubernetesConfigPath
+	}
+
 	var version bool
 
 	defaultKubeConfigPath, _ := kubernetes.GetHomeKubernetesConfigPath()
@@ -69,8 +83,22 @@ func main() {
 	}
 
 	//log.Printf("Trace = %v\n", trace)
-
 	initCommandHandlers()
+
+	// set config
+	config = cli.Config{
+		CatalogServiceURL:    catalogServiceURL,
+		Namespace:            namespace,
+		KubernetesConfigPath: kubernetesConfigPath,
+	}
+
+	// save config file
+	if !cli.CheckConfig() {
+		err := cli.CreateConfig(&config)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	args := flag.Args()
 
@@ -95,12 +123,16 @@ func main() {
 
 func initCommandHandlers() {
 	commandList = map[string]Command{
-		"help":   Command{"help", "show help message", helpHandler},
-		"list":   Command{"list", "list available datasets", listHandler},
-		"find":   Command{"find", "search datasets by keywords", searchHandler},
-		"search": Command{"search", "search datasets by keywords", searchHandler},
-		"order":  Command{"order", "order a dataset", orderHandler},
-		"mount":  Command{"mount", "order a dataset", orderHandler},
+		"help":    Command{"help", "show help message", helpHandler},
+		"list":    Command{"list", "list available datasets", listHandler},
+		"find":    Command{"find", "search datasets by keywords", searchHandler},
+		"search":  Command{"search", "search datasets by keywords", searchHandler},
+		"order":   Command{"order", "order a dataset", orderHandler},
+		"mount":   Command{"mount", "order a dataset", orderHandler},
+		"show":    Command{"show", "show orders", showHandler},
+		"ps":      Command{"ps", "show orders", showHandler},
+		"return":  Command{"return", "return a dataset", returnHandler},
+		"unmount": Command{"unmount", "return a dataset", returnHandler},
 	}
 }
 
@@ -111,7 +143,7 @@ func showCommands() {
 }
 
 func listHandler(args []string) {
-	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(config.CatalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -138,7 +170,7 @@ func searchHandler(args []string) {
 		keywords = append(keywords, arg)
 	}
 
-	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(config.CatalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -155,7 +187,7 @@ func searchHandler(args []string) {
 }
 
 func orderHandler(args []string) {
-	client, err := catalog.NewCatalogServiceClient(catalogServiceURL, trace)
+	client, err := catalog.NewCatalogServiceClient(config.CatalogServiceURL, trace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -165,7 +197,7 @@ func orderHandler(args []string) {
 		log.Fatal(err)
 	}
 
-	volumeManager, err := kubernetes.NewVolumeManager(kubernetesConfigPath, namespace)
+	volumeManager, err := kubernetes.NewVolumeManager(config.KubernetesConfigPath, config.Namespace)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -177,14 +209,58 @@ func orderHandler(args []string) {
 
 	log.Printf("Ordering %d datasets...\n", len(datasets))
 	for _, ds := range datasets {
-		log.Printf("  [%v] %s\n", ds.ID, ds.Name)
+		log.Printf("  Dataset: [%v] %s\n", ds.ID, ds.Name)
 
-		pv, pvc, err := volumeManager.CreateVolume(ds)
+		mount, err := volumeManager.CreateVolume(ds)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		log.Printf("  ===> Created a persistent volume: volume(%s) claim(%s)\n", pv.GetName(), pvc.GetName())
+		log.Printf("    VolumeName: %s\n", mount.PersistentVolume.GetName())
+		log.Printf("    ClaimName: %s\n", mount.PersistentVolumeClaim.GetName())
+	}
+}
+
+func showHandler(args []string) {
+	volumeManager, err := kubernetes.NewVolumeManager(config.KubernetesConfigPath, config.Namespace)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Show orders...\n")
+	mounts, err := volumeManager.ListVolumes()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for _, mount := range mounts {
+		log.Printf("  VolumeName: %s\n", mount.PersistentVolume.GetName())
+		log.Printf("    Dataset: [%v] %s\n", mount.Dataset.ID, mount.Dataset.Name)
+		log.Printf("    ClaimName: %s\n", mount.PersistentVolumeClaim.GetName())
+	}
+}
+
+func returnHandler(args []string) {
+	volumeManager, err := kubernetes.NewVolumeManager(config.KubernetesConfigPath, config.Namespace)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Returning datasets...\n")
+	for _, volumeName := range args {
+		mount, err := volumeManager.GetVolume(volumeName)
+		if err != nil {
+			log.Println(err)
+		}
+
+		log.Printf("  VolumeName: %s\n", mount.PersistentVolume.GetName())
+		log.Printf("    Dataset: [%v] %s\n", mount.Dataset.ID, mount.Dataset.Name)
+		log.Printf("    ClaimName: %s\n", mount.PersistentVolumeClaim.GetName())
+
+		err = volumeManager.DeleteVolume(volumeName)
+		if err != nil {
+			log.Println(err)
+		}
 	}
 }
 

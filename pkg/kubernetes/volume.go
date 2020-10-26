@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/iychoi/parcel-catalog-service/pkg/dataset"
@@ -43,6 +44,13 @@ const (
 	// VolumeNamespace is a default namespace
 	VolumeNamespace = "default"
 )
+
+// DatasetMount holds a volume mapping
+type DatasetMount struct {
+	Dataset               *dataset.Dataset
+	PersistentVolume      *apiv1.PersistentVolume
+	PersistentVolumeClaim *apiv1.PersistentVolumeClaim
+}
 
 // ParcelVolumeManager manages parcel volume
 type ParcelVolumeManager struct {
@@ -80,7 +88,7 @@ func NewVolumeManager(configPath string, namespace string) (*ParcelVolumeManager
 
 // CreateStorageClass creates a new storage class
 func (manager *ParcelVolumeManager) CreateStorageClass() error {
-	sc, err := getStorageClass()
+	sc, err := makeStorageClass()
 	if err != nil {
 		return err
 	}
@@ -89,12 +97,10 @@ func (manager *ParcelVolumeManager) CreateStorageClass() error {
 	scList, err := storageClient.StorageClasses().List(metav1.ListOptions{})
 
 	foundExisting := false
-	if len(scList.Items) > 0 {
-		for _, scExisting := range scList.Items {
-			if scExisting.GetName() == sc.GetName() {
-				foundExisting = true
-				break
-			}
+	for _, scExisting := range scList.Items {
+		if scExisting.GetName() == sc.GetName() {
+			foundExisting = true
+			break
 		}
 	}
 
@@ -108,31 +114,158 @@ func (manager *ParcelVolumeManager) CreateStorageClass() error {
 	return nil
 }
 
-func (manager *ParcelVolumeManager) CreateVolume(ds *dataset.Dataset) (*apiv1.PersistentVolume, *apiv1.PersistentVolumeClaim, error) {
-	volumeName := getPersistentVolumeName(ds)
-	pv, err := getPersistentVolume(ds, volumeName)
+// CreateVolume creates a Persistent Volume for Kubernetes
+func (manager *ParcelVolumeManager) CreateVolume(ds *dataset.Dataset) (*DatasetMount, error) {
+	volumeName := makePersistentVolumeName(ds)
+	pv, err := makePersistentVolume(ds, volumeName)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	coreClient := manager.clientset.CoreV1()
 	// create a new pv
 	pvCreated, err := coreClient.PersistentVolumes().Create(pv)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	pvc, err := getPersistentVolumeClaim(ds, volumeName)
+	pvc, err := makePersistentVolumeClaim(ds, volumeName)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	pvcCreated, err := coreClient.PersistentVolumeClaims(manager.namespace).Create(pvc)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
-	return pvCreated, pvcCreated, nil
+	return &DatasetMount{
+		Dataset:               ds,
+		PersistentVolume:      pvCreated,
+		PersistentVolumeClaim: pvcCreated,
+	}, nil
+}
+
+// ListVolumes lists Persistent Volumes for Kubernetes
+func (manager *ParcelVolumeManager) ListVolumes() ([]*DatasetMount, error) {
+	coreClient := manager.clientset.CoreV1()
+	// list pv
+	pvList, err := coreClient.PersistentVolumes().List(metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	pvcList, err := coreClient.PersistentVolumeClaims(manager.namespace).List(metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	mounts := []*DatasetMount{}
+
+	for _, pv := range pvList.Items {
+
+		dataset := dataset.Dataset{}
+		if checkPersistentVolumeName(&pv) {
+			datasetID, found := pv.Labels["dataset-id"]
+			if !found {
+				continue
+			}
+
+			dataset.ID, err = strconv.ParseInt(datasetID, 10, 64)
+			if err != nil {
+				continue
+			}
+
+			datasetName, found := pv.Labels["dataset-name"]
+			if !found {
+				continue
+			}
+
+			dataset.Name = datasetName
+
+			// get pvc
+			for _, pvc := range pvcList.Items {
+				if pv.Name == pvc.Labels["volume-name"] {
+					mount := DatasetMount{
+						Dataset:               &dataset,
+						PersistentVolume:      &pv,
+						PersistentVolumeClaim: &pvc,
+					}
+
+					mounts = append(mounts, &mount)
+					break
+				}
+			}
+		}
+	}
+
+	return mounts, nil
+}
+
+// GetVolume returns a Persistent Volume for Kubernetes
+func (manager *ParcelVolumeManager) GetVolume(volumeName string) (*DatasetMount, error) {
+	coreClient := manager.clientset.CoreV1()
+	// get pv
+	pv, err := coreClient.PersistentVolumes().Get(volumeName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	if pv.Name != volumeName {
+		return nil, fmt.Errorf("Could not find pv with name %s", volumeName)
+	}
+
+	pvc, err := coreClient.PersistentVolumeClaims(manager.namespace).Get(makePersistentVolumeClaimName(volumeName), metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+
+	if pvc.Labels["volume-name"] != volumeName {
+		return nil, fmt.Errorf("Could not find pvc with name %s", volumeName)
+	}
+
+	dataset := dataset.Dataset{}
+	datasetID, found := pv.Labels["dataset-id"]
+	if !found {
+		return nil, fmt.Errorf("Could not find 'dataset-id' field in a persistent volume")
+	}
+
+	dataset.ID, err = strconv.ParseInt(datasetID, 10, 64)
+	if err != nil {
+		return nil, err
+	}
+
+	datasetName, found := pv.Labels["dataset-name"]
+	if !found {
+		return nil, fmt.Errorf("Could not find 'dataset-name' field in a persistent volume")
+	}
+
+	dataset.Name = datasetName
+
+	return &DatasetMount{
+		Dataset:               &dataset,
+		PersistentVolume:      pv,
+		PersistentVolumeClaim: pvc,
+	}, nil
+}
+
+// DeleteVolume deletes a Persistent Volume for Kubernetes
+func (manager *ParcelVolumeManager) DeleteVolume(volumeName string) error {
+	coreClient := manager.clientset.CoreV1()
+
+	// delete pvc
+	err := coreClient.PersistentVolumeClaims(manager.namespace).Delete(makePersistentVolumeClaimName(volumeName), &metav1.DeleteOptions{})
+	if err != nil {
+		return err
+	}
+
+	// delete pv
+	err = coreClient.PersistentVolumes().Delete(volumeName, &metav1.DeleteOptions{})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func getClient(ds *dataset.Dataset) (string, error) {
@@ -159,14 +292,20 @@ func getClient(ds *dataset.Dataset) (string, error) {
 	}
 }
 
-func getLabels(ds *dataset.Dataset, volumeName string) map[string]string {
+func makeLabels(ds *dataset.Dataset, volumeName string) map[string]string {
 	labels := map[string]string{
-		"volume-name": volumeName,
+		"volume-name":  volumeName,
+		"dataset-id":   strconv.FormatInt(ds.ID, 10),
+		"dataset-name": ds.Name,
 	}
 	return labels
 }
 
-func getPersistentVolumeName(ds *dataset.Dataset) string {
+func checkPersistentVolumeName(pv *apiv1.PersistentVolume) bool {
+	return strings.HasPrefix(pv.Name, "parcel-pv-")
+}
+
+func makePersistentVolumeName(ds *dataset.Dataset) string {
 	reg, err := regexp.Compile("[^a-zA-Z0-9]+")
 	if err != nil {
 		log.Fatal(err)
@@ -178,15 +317,15 @@ func getPersistentVolumeName(ds *dataset.Dataset) string {
 	return fmt.Sprintf("parcel-pv-%s-%s", dsName, uuid)
 }
 
-func getPersistentVolumeClaimName(ds *dataset.Dataset, volumeName string) string {
+func makePersistentVolumeClaimName(volumeName string) string {
 	return fmt.Sprintf("%s-claim", volumeName)
 }
 
-func getPersistentVolumeHandleName(ds *dataset.Dataset, volumeName string) string {
+func makePersistentVolumeHandleName(volumeName string) string {
 	return fmt.Sprintf("%s-handle", volumeName)
 }
 
-func getStorageClass() (*storagev1.StorageClass, error) {
+func makeStorageClass() (*storagev1.StorageClass, error) {
 	return &storagev1.StorageClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: csiDriverStorageClassName,
@@ -195,13 +334,13 @@ func getStorageClass() (*storagev1.StorageClass, error) {
 	}, nil
 }
 
-func getPersistentVolume(ds *dataset.Dataset, volumeName string) (*apiv1.PersistentVolume, error) {
+func makePersistentVolume(ds *dataset.Dataset, volumeName string) (*apiv1.PersistentVolume, error) {
 	client, err := getClient(ds)
 	if err != nil {
 		return nil, err
 	}
 
-	labels := getLabels(ds, volumeName)
+	labels := makeLabels(ds, volumeName)
 	volmode := apiv1.PersistentVolumeFilesystem
 	return &apiv1.PersistentVolume{
 		ObjectMeta: metav1.ObjectMeta{
@@ -222,7 +361,7 @@ func getPersistentVolume(ds *dataset.Dataset, volumeName string) (*apiv1.Persist
 			PersistentVolumeSource: apiv1.PersistentVolumeSource{
 				CSI: &apiv1.CSIPersistentVolumeSource{
 					Driver:       csiDriverName,
-					VolumeHandle: getPersistentVolumeHandleName(ds, volumeName),
+					VolumeHandle: makePersistentVolumeHandleName(volumeName),
 					VolumeAttributes: map[string]string{
 						"client": client,
 						"url":    ds.URL,
@@ -234,13 +373,13 @@ func getPersistentVolume(ds *dataset.Dataset, volumeName string) (*apiv1.Persist
 	}, nil
 }
 
-func getPersistentVolumeClaim(ds *dataset.Dataset, volumeName string) (*apiv1.PersistentVolumeClaim, error) {
-	labels := getLabels(ds, volumeName)
+func makePersistentVolumeClaim(ds *dataset.Dataset, volumeName string) (*apiv1.PersistentVolumeClaim, error) {
+	labels := makeLabels(ds, volumeName)
 	storageclassname := csiDriverStorageClassName
 
 	return &apiv1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   getPersistentVolumeClaimName(ds, volumeName),
+			Name:   makePersistentVolumeClaimName(volumeName),
 			Labels: labels,
 		},
 		Spec: apiv1.PersistentVolumeClaimSpec{
